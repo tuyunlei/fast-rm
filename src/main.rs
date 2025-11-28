@@ -22,6 +22,26 @@ impl RemoveConfig {
             continue_on_error: cli.continue_on_error,
         }
     }
+
+    /// Log an action being performed on a path
+    fn log_action(&self, action: &str, action_dry: &str, path: &Path, color: colored::Color) {
+        if self.verbose || self.dry_run {
+            let msg = if self.dry_run { action_dry } else { action };
+            println!("  {}{:?}", msg.color(color), path);
+        }
+    }
+
+    /// Log a checking action
+    fn log_check(&self, path: &Path) {
+        if self.verbose {
+            let msg = if self.dry_run {
+                "Would check "
+            } else {
+                "Checking "
+            };
+            println!("  {}{:?}", msg.dimmed(), path);
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -217,36 +237,19 @@ fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64,
     let path = path_ref.as_ref();
     let mut items_removed_count = 0;
 
-    if config.verbose {
-        println!(
-            "  {}{:?}",
-            if config.dry_run {
-                "Would check "
-            } else {
-                "Checking "
-            }
-            .dimmed(),
-            path
-        );
-    }
+    config.log_check(path);
 
     // Use symlink_metadata to correctly assess symlinks, even broken ones.
     let metadata = fs::symlink_metadata(path)
         .map_err(|e| format!("Failed to get metadata for {:?}: {}", path, e))?;
 
     if metadata.file_type().is_symlink() {
-        if config.verbose || config.dry_run {
-            println!(
-                "  {}{:?}",
-                if config.dry_run {
-                    "Would remove symlink "
-                } else {
-                    "Removing symlink "
-                }
-                .yellow(),
-                path
-            );
-        }
+        config.log_action(
+            "Removing symlink ",
+            "Would remove symlink ",
+            path,
+            colored::Color::Yellow,
+        );
         if !config.dry_run {
             fs::remove_file(path)
                 .map_err(|e| format!("Failed to remove symlink {:?}: {}", path, e))?;
@@ -256,18 +259,12 @@ fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64,
     }
 
     if metadata.is_file() {
-        if config.verbose || config.dry_run {
-            println!(
-                "  {}{:?}",
-                if config.dry_run {
-                    "Would remove file "
-                } else {
-                    "Removing file "
-                }
-                .yellow(),
-                path
-            );
-        }
+        config.log_action(
+            "Removing file ",
+            "Would remove file ",
+            path,
+            colored::Color::Yellow,
+        );
         if !config.dry_run {
             fs::remove_file(path)
                 .map_err(|e| format!("Failed to remove file {:?}: {}", path, e))?;
@@ -277,18 +274,12 @@ fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64,
     }
 
     if metadata.is_dir() {
-        if config.verbose || config.dry_run {
-            println!(
-                "  {}{:?}",
-                if config.dry_run {
-                    "Would enter directory "
-                } else {
-                    "Entering directory "
-                }
-                .blue(),
-                path
-            );
-        }
+        config.log_action(
+            "Entering directory ",
+            "Would enter directory ",
+            path,
+            colored::Color::Blue,
+        );
 
         let children = match fs::read_dir(path) {
             Ok(children) => children,
@@ -332,18 +323,12 @@ fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64,
             );
         }
 
-        if config.verbose || config.dry_run {
-            println!(
-                "  {}{:?}",
-                if config.dry_run {
-                    "Would remove empty directory "
-                } else {
-                    "Removing empty directory "
-                }
-                .yellow(),
-                path
-            );
-        }
+        config.log_action(
+            "Removing empty directory ",
+            "Would remove empty directory ",
+            path,
+            colored::Color::Yellow,
+        );
         if !config.dry_run {
             fs::remove_dir(path)
                 .map_err(|e| format!("Failed to remove directory {:?}: {}", path, e))?;
