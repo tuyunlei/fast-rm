@@ -1,10 +1,61 @@
 use std::collections::HashSet;
+use std::fmt;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use colored::*;
 use rayon::prelude::*;
+
+/// Errors that can occur during removal operations
+#[derive(Debug)]
+enum RemoveError {
+    /// Failed to get metadata for a path
+    MetadataFailed(PathBuf, io::Error),
+    /// Failed to remove a file or symlink
+    RemoveFailed(PathBuf, io::Error),
+    /// Failed to read directory contents
+    ReadDirFailed(PathBuf, io::Error),
+    /// Failed to remove a directory
+    RemoveDirFailed(PathBuf, io::Error),
+    /// Failed to access a directory entry
+    DirEntryFailed(PathBuf, io::Error),
+    /// Path is not a recognized type (file, directory, or symlink)
+    UnsupportedType(PathBuf),
+    /// Path overlap detected (concurrent access issue)
+    PathOverlap(String),
+}
+
+impl fmt::Display for RemoveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RemoveError::MetadataFailed(path, err) => {
+                write!(f, "Failed to get metadata for {:?}: {}", path, err)
+            }
+            RemoveError::RemoveFailed(path, err) => {
+                write!(f, "Failed to remove {:?}: {}", path, err)
+            }
+            RemoveError::ReadDirFailed(path, err) => {
+                write!(f, "Failed to read directory {:?}: {}", path, err)
+            }
+            RemoveError::RemoveDirFailed(path, err) => {
+                write!(f, "Failed to remove directory {:?}: {}", path, err)
+            }
+            RemoveError::DirEntryFailed(path, err) => {
+                write!(f, "Error accessing directory entry in {:?}: {}", path, err)
+            }
+            RemoveError::UnsupportedType(path) => {
+                write!(
+                    f,
+                    "Path {:?} is not a file, directory, or symlink that can be removed",
+                    path
+                )
+            }
+            RemoveError::PathOverlap(msg) => write!(f, "{}", msg),
+        }
+    }
+}
 
 /// Configuration for removal operations
 #[derive(Debug, Clone, Copy)]
@@ -75,7 +126,7 @@ struct Cli {
 
 /// Process results from removal operations and return statistics
 fn process_results(
-    results: Vec<(&PathBuf, Result<u64, String>)>,
+    results: Vec<(&PathBuf, Result<u64, RemoveError>)>,
     config: &RemoveConfig,
 ) -> (u64, u64) {
     let mut total_errors = 0;
@@ -103,7 +154,7 @@ fn process_results(
             }
             Err(e) => {
                 total_errors += 1;
-                eprintln!("{} {:?}: {}", "Failed to remove".red(), path, e.red());
+                eprintln!("{} {:?}: {}", "Failed to remove".red(), path, e.to_string().red());
             }
         }
     }
@@ -144,7 +195,7 @@ fn print_summary_and_exit(total_items: u64, total_errors: u64, config: &RemoveCo
 }
 
 /// Deduplicate and check for overlapping paths to prevent concurrent access issues
-fn deduplicate_and_check_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+fn deduplicate_and_check_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, RemoveError> {
     let mut canonical_paths = Vec::new();
     let mut seen = HashSet::new();
 
@@ -181,16 +232,16 @@ fn deduplicate_and_check_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String
             let path_j = &canonical_paths[j];
 
             if path_i.starts_with(path_j) {
-                return Err(format!(
+                return Err(RemoveError::PathOverlap(format!(
                     "Path overlap detected: {:?} is inside {:?}. This could cause concurrent access issues.",
                     path_i, path_j
-                ));
+                )));
             }
             if path_j.starts_with(path_i) {
-                return Err(format!(
+                return Err(RemoveError::PathOverlap(format!(
                     "Path overlap detected: {:?} is inside {:?}. This could cause concurrent access issues.",
                     path_j, path_i
-                ));
+                )));
             }
         }
     }
@@ -253,7 +304,7 @@ fn main() {
 }
 
 /// Remove a symlink
-fn remove_symlink(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
+fn remove_symlink(path: &Path, config: &RemoveConfig) -> Result<u64, RemoveError> {
     config.log_action(
         "Removing symlink ",
         "Would remove symlink ",
@@ -262,13 +313,13 @@ fn remove_symlink(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
     );
     if !config.dry_run {
         fs::remove_file(path)
-            .map_err(|e| format!("Failed to remove symlink {:?}: {}", path, e))?;
+            .map_err(|e| RemoveError::RemoveFailed(path.to_path_buf(), e))?;
     }
     Ok(1)
 }
 
 /// Remove a regular file
-fn remove_file(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
+fn remove_file(path: &Path, config: &RemoveConfig) -> Result<u64, RemoveError> {
     config.log_action(
         "Removing file ",
         "Would remove file ",
@@ -277,13 +328,13 @@ fn remove_file(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
     );
     if !config.dry_run {
         fs::remove_file(path)
-            .map_err(|e| format!("Failed to remove file {:?}: {}", path, e))?;
+            .map_err(|e| RemoveError::RemoveFailed(path.to_path_buf(), e))?;
     }
     Ok(1)
 }
 
 /// Remove a directory and all its contents recursively
-fn remove_directory(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
+fn remove_directory(path: &Path, config: &RemoveConfig) -> Result<u64, RemoveError> {
     config.log_action(
         "Entering directory ",
         "Would enter directory ",
@@ -292,17 +343,17 @@ fn remove_directory(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
     );
 
     let children = fs::read_dir(path)
-        .map_err(|e| format!("Failed to read directory {:?}: {}", path, e))?;
+        .map_err(|e| RemoveError::ReadDirFailed(path.to_path_buf(), e))?;
 
-    let results: Vec<Result<u64, String>> = children
+    let results: Vec<Result<u64, RemoveError>> = children
         .par_bridge()
         .filter_map(|entry_result| match entry_result {
             Ok(entry) => Some(fast_remove(entry.path(), config)),
             Err(e) => {
                 // Log and return error for problematic directory entries
-                let error_msg = format!("Error accessing directory entry in {:?}: {}", path, e);
-                eprintln!("  {}", error_msg.red().dimmed());
-                Some(Err(error_msg))
+                let error = RemoveError::DirEntryFailed(path.to_path_buf(), e);
+                eprintln!("  {}", error.to_string().red().dimmed());
+                Some(Err(error))
             }
         })
         .collect();
@@ -341,21 +392,21 @@ fn remove_directory(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
     );
     if !config.dry_run {
         fs::remove_dir(path)
-            .map_err(|e| format!("Failed to remove directory {:?}: {}", path, e))?;
+            .map_err(|e| RemoveError::RemoveDirFailed(path.to_path_buf(), e))?;
     }
     items_removed_count += 1; // Count the directory itself
     Ok(items_removed_count)
 }
 
 /// Main entry point for removing a path (file, directory, or symlink)
-fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64, String> {
+fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64, RemoveError> {
     let path = path_ref.as_ref();
 
     config.log_check(path);
 
     // Use symlink_metadata to correctly assess symlinks, even broken ones.
     let metadata = fs::symlink_metadata(path)
-        .map_err(|e| format!("Failed to get metadata for {:?}: {}", path, e))?;
+        .map_err(|e| RemoveError::MetadataFailed(path.to_path_buf(), e))?;
 
     if metadata.file_type().is_symlink() {
         remove_symlink(path, config)
@@ -364,9 +415,6 @@ fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64,
     } else if metadata.is_dir() {
         remove_directory(path, config)
     } else {
-        Err(format!(
-            "Path {:?} is not a file, directory, or symlink that can be removed.",
-            path
-        ))
+        Err(RemoveError::UnsupportedType(path.to_path_buf()))
     }
 }
