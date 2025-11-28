@@ -6,6 +6,24 @@ use clap::Parser;
 use colored::*;
 use rayon::prelude::*;
 
+/// Configuration for removal operations
+#[derive(Debug, Clone, Copy)]
+struct RemoveConfig {
+    verbose: bool,
+    dry_run: bool,
+    continue_on_error: bool,
+}
+
+impl RemoveConfig {
+    fn from_cli(cli: &Cli) -> Self {
+        Self {
+            verbose: cli.verbose,
+            dry_run: cli.dry_run,
+            continue_on_error: cli.continue_on_error,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[clap(
     author,
@@ -110,7 +128,9 @@ fn main() {
         }
     };
 
-    if cli.dry_run {
+    let config = RemoveConfig::from_cli(&cli);
+
+    if config.dry_run {
         println!(
             "{}",
             "Dry run mode activated. No files will be deleted."
@@ -122,10 +142,10 @@ fn main() {
     let results: Vec<_> = paths_to_process
         .par_iter()
         .map(|path| {
-            if cli.verbose || cli.dry_run {
+            if config.verbose || config.dry_run {
                 println!(
                     "{} {:?}...",
-                    if cli.dry_run {
+                    if config.dry_run {
                         "Would process".blue()
                     } else {
                         "Processing".cyan()
@@ -133,7 +153,7 @@ fn main() {
                     path
                 );
             }
-            let result = fast_remove(path, cli.verbose, cli.dry_run, cli.continue_on_error);
+            let result = fast_remove(path, &config);
             (path, result)
         })
         .collect();
@@ -145,11 +165,11 @@ fn main() {
         match result {
             Ok(count) => {
                 total_items += count;
-                if count > 0 || cli.verbose {
+                if count > 0 || config.verbose {
                     // Only print success if something was (or would be) done, or if verbose
                     println!(
                         "{} {:?} ({} {} {})",
-                        if cli.dry_run {
+                        if config.dry_run {
                             "Would successfully remove".green()
                         } else {
                             "Successfully removed".green()
@@ -157,7 +177,7 @@ fn main() {
                         path,
                         count,
                         if count == 1 { "item" } else { "items" },
-                        if cli.dry_run { "processed" } else { "deleted" }
+                        if config.dry_run { "processed" } else { "deleted" }
                     );
                 }
             }
@@ -168,17 +188,17 @@ fn main() {
         }
     }
 
-    if cli.dry_run {
+    if config.dry_run {
         println!("{}", "Dry run finished.".yellow().bold());
     }
 
-    if total_items > 0 || cli.verbose {
+    if total_items > 0 || config.verbose {
         println!(
             "\n{} {} total {} {}.",
             "Summary:".bold(),
             total_items,
             if total_items == 1 { "item" } else { "items" },
-            if cli.dry_run { "would be removed" } else { "removed" }
+            if config.dry_run { "would be removed" } else { "removed" }
         );
     }
 
@@ -193,19 +213,19 @@ fn main() {
 }
 
 // Returns the number of items (files/symlinks/dirs) processed/deleted.
-fn fast_remove(
-    path_ref: impl AsRef<Path>,
-    verbose: bool,
-    dry_run: bool,
-    continue_on_error: bool,
-) -> Result<u64, String> {
+fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64, String> {
     let path = path_ref.as_ref();
     let mut items_removed_count = 0;
 
-    if verbose {
+    if config.verbose {
         println!(
             "  {}{:?}",
-            if dry_run { "Would check " } else { "Checking " }.dimmed(),
+            if config.dry_run {
+                "Would check "
+            } else {
+                "Checking "
+            }
+            .dimmed(),
             path
         );
     }
@@ -215,10 +235,10 @@ fn fast_remove(
         .map_err(|e| format!("Failed to get metadata for {:?}: {}", path, e))?;
 
     if metadata.file_type().is_symlink() {
-        if verbose || dry_run {
+        if config.verbose || config.dry_run {
             println!(
                 "  {}{:?}",
-                if dry_run {
+                if config.dry_run {
                     "Would remove symlink "
                 } else {
                     "Removing symlink "
@@ -227,7 +247,7 @@ fn fast_remove(
                 path
             );
         }
-        if !dry_run {
+        if !config.dry_run {
             fs::remove_file(path)
                 .map_err(|e| format!("Failed to remove symlink {:?}: {}", path, e))?;
         }
@@ -236,10 +256,10 @@ fn fast_remove(
     }
 
     if metadata.is_file() {
-        if verbose || dry_run {
+        if config.verbose || config.dry_run {
             println!(
                 "  {}{:?}",
-                if dry_run {
+                if config.dry_run {
                     "Would remove file "
                 } else {
                     "Removing file "
@@ -248,7 +268,7 @@ fn fast_remove(
                 path
             );
         }
-        if !dry_run {
+        if !config.dry_run {
             fs::remove_file(path)
                 .map_err(|e| format!("Failed to remove file {:?}: {}", path, e))?;
         }
@@ -257,10 +277,10 @@ fn fast_remove(
     }
 
     if metadata.is_dir() {
-        if verbose || dry_run {
+        if config.verbose || config.dry_run {
             println!(
                 "  {}{:?}",
-                if dry_run {
+                if config.dry_run {
                     "Would enter directory "
                 } else {
                     "Entering directory "
@@ -278,7 +298,7 @@ fn fast_remove(
         let results: Vec<Result<u64, String>> = children
             .par_bridge()
             .filter_map(|entry_result| match entry_result {
-                Ok(entry) => Some(fast_remove(entry.path(), verbose, dry_run, continue_on_error)),
+                Ok(entry) => Some(fast_remove(entry.path(), config)),
                 Err(e) => {
                     // Log and return error for problematic directory entries
                     let error_msg = format!("Error accessing directory entry in {:?}: {}", path, e);
@@ -293,7 +313,7 @@ fn fast_remove(
             match result {
                 Ok(count) => items_removed_count += count,
                 Err(e) => {
-                    if continue_on_error {
+                    if config.continue_on_error {
                         errors.push(e);
                     } else {
                         return Err(e); // Propagate error immediately
@@ -303,7 +323,7 @@ fn fast_remove(
         }
 
         // If there were errors and we're continuing, report them but don't fail the whole operation
-        if !errors.is_empty() && continue_on_error {
+        if !errors.is_empty() && config.continue_on_error {
             eprintln!(
                 "  {} {} error(s) in subdirectory {:?}, continuing...",
                 "Warning:".yellow(),
@@ -312,10 +332,10 @@ fn fast_remove(
             );
         }
 
-        if verbose || dry_run {
+        if config.verbose || config.dry_run {
             println!(
                 "  {}{:?}",
-                if dry_run {
+                if config.dry_run {
                     "Would remove empty directory "
                 } else {
                     "Removing empty directory "
@@ -324,7 +344,7 @@ fn fast_remove(
                 path
             );
         }
-        if !dry_run {
+        if !config.dry_run {
             fs::remove_dir(path)
                 .map_err(|e| format!("Failed to remove directory {:?}: {}", path, e))?;
         }
