@@ -232,10 +232,104 @@ fn main() {
     }
 }
 
-// Returns the number of items (files/symlinks/dirs) processed/deleted.
+/// Remove a symlink
+fn remove_symlink(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
+    config.log_action(
+        "Removing symlink ",
+        "Would remove symlink ",
+        path,
+        colored::Color::Yellow,
+    );
+    if !config.dry_run {
+        fs::remove_file(path)
+            .map_err(|e| format!("Failed to remove symlink {:?}: {}", path, e))?;
+    }
+    Ok(1)
+}
+
+/// Remove a regular file
+fn remove_file(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
+    config.log_action(
+        "Removing file ",
+        "Would remove file ",
+        path,
+        colored::Color::Yellow,
+    );
+    if !config.dry_run {
+        fs::remove_file(path)
+            .map_err(|e| format!("Failed to remove file {:?}: {}", path, e))?;
+    }
+    Ok(1)
+}
+
+/// Remove a directory and all its contents recursively
+fn remove_directory(path: &Path, config: &RemoveConfig) -> Result<u64, String> {
+    config.log_action(
+        "Entering directory ",
+        "Would enter directory ",
+        path,
+        colored::Color::Blue,
+    );
+
+    let children = fs::read_dir(path)
+        .map_err(|e| format!("Failed to read directory {:?}: {}", path, e))?;
+
+    let results: Vec<Result<u64, String>> = children
+        .par_bridge()
+        .filter_map(|entry_result| match entry_result {
+            Ok(entry) => Some(fast_remove(entry.path(), config)),
+            Err(e) => {
+                // Log and return error for problematic directory entries
+                let error_msg = format!("Error accessing directory entry in {:?}: {}", path, e);
+                eprintln!("  {}", error_msg.red().dimmed());
+                Some(Err(error_msg))
+            }
+        })
+        .collect();
+
+    let mut errors = Vec::new();
+    let mut items_removed_count = 0;
+
+    for result in results {
+        match result {
+            Ok(count) => items_removed_count += count,
+            Err(e) => {
+                if config.continue_on_error {
+                    errors.push(e);
+                } else {
+                    return Err(e); // Propagate error immediately
+                }
+            }
+        }
+    }
+
+    // If there were errors and we're continuing, report them but don't fail the whole operation
+    if !errors.is_empty() && config.continue_on_error {
+        eprintln!(
+            "  {} {} error(s) in subdirectory {:?}, continuing...",
+            "Warning:".yellow(),
+            errors.len(),
+            path
+        );
+    }
+
+    config.log_action(
+        "Removing empty directory ",
+        "Would remove empty directory ",
+        path,
+        colored::Color::Yellow,
+    );
+    if !config.dry_run {
+        fs::remove_dir(path)
+            .map_err(|e| format!("Failed to remove directory {:?}: {}", path, e))?;
+    }
+    items_removed_count += 1; // Count the directory itself
+    Ok(items_removed_count)
+}
+
+/// Main entry point for removing a path (file, directory, or symlink)
 fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64, String> {
     let path = path_ref.as_ref();
-    let mut items_removed_count = 0;
 
     config.log_check(path);
 
@@ -244,101 +338,15 @@ fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64,
         .map_err(|e| format!("Failed to get metadata for {:?}: {}", path, e))?;
 
     if metadata.file_type().is_symlink() {
-        config.log_action(
-            "Removing symlink ",
-            "Would remove symlink ",
-            path,
-            colored::Color::Yellow,
-        );
-        if !config.dry_run {
-            fs::remove_file(path)
-                .map_err(|e| format!("Failed to remove symlink {:?}: {}", path, e))?;
-        }
-        items_removed_count += 1;
-        return Ok(items_removed_count);
+        remove_symlink(path, config)
+    } else if metadata.is_file() {
+        remove_file(path, config)
+    } else if metadata.is_dir() {
+        remove_directory(path, config)
+    } else {
+        Err(format!(
+            "Path {:?} is not a file, directory, or symlink that can be removed.",
+            path
+        ))
     }
-
-    if metadata.is_file() {
-        config.log_action(
-            "Removing file ",
-            "Would remove file ",
-            path,
-            colored::Color::Yellow,
-        );
-        if !config.dry_run {
-            fs::remove_file(path)
-                .map_err(|e| format!("Failed to remove file {:?}: {}", path, e))?;
-        }
-        items_removed_count += 1;
-        return Ok(items_removed_count);
-    }
-
-    if metadata.is_dir() {
-        config.log_action(
-            "Entering directory ",
-            "Would enter directory ",
-            path,
-            colored::Color::Blue,
-        );
-
-        let children = match fs::read_dir(path) {
-            Ok(children) => children,
-            Err(e) => return Err(format!("Failed to read directory {:?}: {}", path, e)),
-        };
-
-        let results: Vec<Result<u64, String>> = children
-            .par_bridge()
-            .filter_map(|entry_result| match entry_result {
-                Ok(entry) => Some(fast_remove(entry.path(), config)),
-                Err(e) => {
-                    // Log and return error for problematic directory entries
-                    let error_msg = format!("Error accessing directory entry in {:?}: {}", path, e);
-                    eprintln!("  {}", error_msg.red().dimmed());
-                    Some(Err(error_msg))
-                }
-            })
-            .collect();
-
-        let mut errors = Vec::new();
-        for result in results {
-            match result {
-                Ok(count) => items_removed_count += count,
-                Err(e) => {
-                    if config.continue_on_error {
-                        errors.push(e);
-                    } else {
-                        return Err(e); // Propagate error immediately
-                    }
-                }
-            }
-        }
-
-        // If there were errors and we're continuing, report them but don't fail the whole operation
-        if !errors.is_empty() && config.continue_on_error {
-            eprintln!(
-                "  {} {} error(s) in subdirectory {:?}, continuing...",
-                "Warning:".yellow(),
-                errors.len(),
-                path
-            );
-        }
-
-        config.log_action(
-            "Removing empty directory ",
-            "Would remove empty directory ",
-            path,
-            colored::Color::Yellow,
-        );
-        if !config.dry_run {
-            fs::remove_dir(path)
-                .map_err(|e| format!("Failed to remove directory {:?}: {}", path, e))?;
-        }
-        items_removed_count += 1; // Count the directory itself
-        return Ok(items_removed_count);
-    }
-
-    Err(format!(
-        "Path {:?} is not a file, directory, or symlink that can be removed.",
-        path
-    ))
 }
