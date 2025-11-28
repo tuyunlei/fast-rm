@@ -17,10 +17,6 @@ struct Cli {
     #[clap(required = true, num_args = 1..)]
     paths: Vec<PathBuf>,
 
-    /// Force removal without prompting (currently a placeholder, not fully implemented)
-    #[clap(short, long)]
-    force: bool,
-
     /// Provide verbose output
     #[clap(short, long)]
     verbose: bool,
