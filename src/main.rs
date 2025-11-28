@@ -358,30 +358,28 @@ fn remove_directory(path: &Path, config: &RemoveConfig) -> Result<u64, RemoveErr
         })
         .collect();
 
-    let mut errors = Vec::new();
-    let mut items_removed_count = 0;
+    // Separate successful and failed results
+    let (successes, errors): (Vec<_>, Vec<_>) = results.into_iter().partition(Result::is_ok);
 
-    for result in results {
-        match result {
-            Ok(count) => items_removed_count += count,
-            Err(e) => {
-                if config.continue_on_error {
-                    errors.push(e);
-                } else {
-                    return Err(e); // Propagate error immediately
-                }
-            }
+    // Sum up all successfully removed items
+    let mut items_removed_count: u64 = successes
+        .into_iter()
+        .map(|r| r.unwrap()) // Safe because we partitioned by is_ok
+        .sum();
+
+    // Handle errors based on continue_on_error setting
+    if !errors.is_empty() {
+        if config.continue_on_error {
+            eprintln!(
+                "  {} {} error(s) in subdirectory {:?}, continuing...",
+                "Warning:".yellow(),
+                errors.len(),
+                path
+            );
+        } else {
+            // Return the first error
+            return Err(errors.into_iter().next().unwrap().unwrap_err());
         }
-    }
-
-    // If there were errors and we're continuing, report them but don't fail the whole operation
-    if !errors.is_empty() && config.continue_on_error {
-        eprintln!(
-            "  {} {} error(s) in subdirectory {:?}, continuing...",
-            "Warning:".yellow(),
-            errors.len(),
-            path
-        );
     }
 
     config.log_action(
