@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -34,6 +35,61 @@ struct Cli {
     continue_on_error: bool,
 }
 
+/// Deduplicate and check for overlapping paths to prevent concurrent access issues
+fn deduplicate_and_check_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut canonical_paths = Vec::new();
+    let mut seen = HashSet::new();
+
+    // First, canonicalize all paths
+    for path in paths {
+        match path.canonicalize() {
+            Ok(canonical) => {
+                if !seen.contains(&canonical) {
+                    seen.insert(canonical.clone());
+                    canonical_paths.push(canonical);
+                }
+            }
+            Err(e) => {
+                // If canonicalize fails, the path might not exist yet, or we don't have permission
+                // In this case, we'll still try to use the original path
+                eprintln!(
+                    "{} Failed to canonicalize {:?}: {}. Using original path.",
+                    "Warning:".yellow(),
+                    path,
+                    e
+                );
+                if !seen.contains(path) {
+                    seen.insert(path.clone());
+                    canonical_paths.push(path.clone());
+                }
+            }
+        }
+    }
+
+    // Check for overlapping paths (one is ancestor of another)
+    for i in 0..canonical_paths.len() {
+        for j in (i + 1)..canonical_paths.len() {
+            let path_i = &canonical_paths[i];
+            let path_j = &canonical_paths[j];
+
+            if path_i.starts_with(path_j) {
+                return Err(format!(
+                    "Path overlap detected: {:?} is inside {:?}. This could cause concurrent access issues.",
+                    path_i, path_j
+                ));
+            }
+            if path_j.starts_with(path_i) {
+                return Err(format!(
+                    "Path overlap detected: {:?} is inside {:?}. This could cause concurrent access issues.",
+                    path_j, path_i
+                ));
+            }
+        }
+    }
+
+    Ok(canonical_paths)
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -45,6 +101,15 @@ fn main() {
             .expect("Failed to initialize thread pool");
     }
 
+    // Deduplicate and check for overlapping paths to prevent concurrent access issues
+    let paths_to_process = match deduplicate_and_check_paths(&cli.paths) {
+        Ok(paths) => paths,
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red().bold(), e);
+            std::process::exit(1);
+        }
+    };
+
     if cli.dry_run {
         println!(
             "{}",
@@ -54,8 +119,7 @@ fn main() {
         );
     }
 
-    let results: Vec<_> = cli
-        .paths
+    let results: Vec<_> = paths_to_process
         .par_iter()
         .map(|path| {
             if cli.verbose || cli.dry_run {
