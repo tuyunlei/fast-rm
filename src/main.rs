@@ -29,14 +29,6 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    if cli.paths.is_empty() {
-        println!(
-            "{}",
-            "No paths provided. Use --help for usage information.".yellow()
-        );
-        return;
-    }
-
     if cli.dry_run {
         println!(
             "{}",
