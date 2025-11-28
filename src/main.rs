@@ -73,6 +73,76 @@ struct Cli {
     continue_on_error: bool,
 }
 
+/// Process results from removal operations and return statistics
+fn process_results(
+    results: Vec<(&PathBuf, Result<u64, String>)>,
+    config: &RemoveConfig,
+) -> (u64, u64) {
+    let mut total_errors = 0;
+    let mut total_items = 0;
+
+    for (path, result) in results {
+        match result {
+            Ok(count) => {
+                total_items += count;
+                if count > 0 || config.verbose {
+                    // Only print success if something was (or would be) done, or if verbose
+                    println!(
+                        "{} {:?} ({} {} {})",
+                        if config.dry_run {
+                            "Would successfully remove".green()
+                        } else {
+                            "Successfully removed".green()
+                        },
+                        path,
+                        count,
+                        if count == 1 { "item" } else { "items" },
+                        if config.dry_run { "processed" } else { "deleted" }
+                    );
+                }
+            }
+            Err(e) => {
+                total_errors += 1;
+                eprintln!("{} {:?}: {}", "Failed to remove".red(), path, e.red());
+            }
+        }
+    }
+
+    (total_items, total_errors)
+}
+
+/// Print final summary and exit with appropriate code
+fn print_summary_and_exit(total_items: u64, total_errors: u64, config: &RemoveConfig) -> ! {
+    if config.dry_run {
+        println!("{}", "Dry run finished.".yellow().bold());
+    }
+
+    if total_items > 0 || config.verbose {
+        println!(
+            "\n{} {} total {} {}.",
+            "Summary:".bold(),
+            total_items,
+            if total_items == 1 { "item" } else { "items" },
+            if config.dry_run {
+                "would be removed"
+            } else {
+                "removed"
+            }
+        );
+    }
+
+    if total_errors > 0 {
+        eprintln!(
+            "{} {} error(s) encountered.",
+            "Errors:".bold().red(),
+            total_errors
+        );
+        std::process::exit(1);
+    }
+
+    std::process::exit(0);
+}
+
 /// Deduplicate and check for overlapping paths to prevent concurrent access issues
 fn deduplicate_and_check_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     let mut canonical_paths = Vec::new();
@@ -178,58 +248,8 @@ fn main() {
         })
         .collect();
 
-    let mut total_errors = 0;
-    let mut total_items = 0;
-
-    for (path, result) in results {
-        match result {
-            Ok(count) => {
-                total_items += count;
-                if count > 0 || config.verbose {
-                    // Only print success if something was (or would be) done, or if verbose
-                    println!(
-                        "{} {:?} ({} {} {})",
-                        if config.dry_run {
-                            "Would successfully remove".green()
-                        } else {
-                            "Successfully removed".green()
-                        },
-                        path,
-                        count,
-                        if count == 1 { "item" } else { "items" },
-                        if config.dry_run { "processed" } else { "deleted" }
-                    );
-                }
-            }
-            Err(e) => {
-                total_errors += 1;
-                eprintln!("{} {:?}: {}", "Failed to remove".red(), path, e.red());
-            }
-        }
-    }
-
-    if config.dry_run {
-        println!("{}", "Dry run finished.".yellow().bold());
-    }
-
-    if total_items > 0 || config.verbose {
-        println!(
-            "\n{} {} total {} {}.",
-            "Summary:".bold(),
-            total_items,
-            if total_items == 1 { "item" } else { "items" },
-            if config.dry_run { "would be removed" } else { "removed" }
-        );
-    }
-
-    if total_errors > 0 {
-        eprintln!(
-            "{} {} error(s) encountered.",
-            "Errors:".bold().red(),
-            total_errors
-        );
-        std::process::exit(1);
-    }
+    let (total_items, total_errors) = process_results(results, &config);
+    print_summary_and_exit(total_items, total_errors, &config);
 }
 
 /// Remove a symlink
