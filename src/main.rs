@@ -28,6 +28,10 @@ struct Cli {
     /// Number of threads to use (defaults to number of CPU cores)
     #[clap(short = 'j', long = "threads")]
     threads: Option<usize>,
+
+    /// Continue processing even if errors occur
+    #[clap(short = 'c', long = "continue-on-error")]
+    continue_on_error: bool,
 }
 
 fn main() {
@@ -50,20 +54,33 @@ fn main() {
         );
     }
 
-    cli.paths.par_iter().for_each(|path| {
-        if cli.verbose || cli.dry_run {
-            println!(
-                "{} {:?}...",
-                if cli.dry_run {
-                    "Would process".blue()
-                } else {
-                    "Processing".cyan()
-                },
-                path
-            );
-        }
-        match fast_remove(path, cli.verbose, cli.dry_run) {
+    let results: Vec<_> = cli
+        .paths
+        .par_iter()
+        .map(|path| {
+            if cli.verbose || cli.dry_run {
+                println!(
+                    "{} {:?}...",
+                    if cli.dry_run {
+                        "Would process".blue()
+                    } else {
+                        "Processing".cyan()
+                    },
+                    path
+                );
+            }
+            let result = fast_remove(path, cli.verbose, cli.dry_run, cli.continue_on_error);
+            (path, result)
+        })
+        .collect();
+
+    let mut total_errors = 0;
+    let mut total_items = 0;
+
+    for (path, result) in results {
+        match result {
             Ok(count) => {
+                total_items += count;
                 if count > 0 || cli.verbose {
                     // Only print success if something was (or would be) done, or if verbose
                     println!(
@@ -81,17 +98,43 @@ fn main() {
                 }
             }
             Err(e) => {
+                total_errors += 1;
                 eprintln!("{} {:?}: {}", "Failed to remove".red(), path, e.red());
             }
         }
-    });
+    }
+
     if cli.dry_run {
         println!("{}", "Dry run finished.".yellow().bold());
+    }
+
+    if total_items > 0 || cli.verbose {
+        println!(
+            "\n{} {} total {} {}.",
+            "Summary:".bold(),
+            total_items,
+            if total_items == 1 { "item" } else { "items" },
+            if cli.dry_run { "would be removed" } else { "removed" }
+        );
+    }
+
+    if total_errors > 0 {
+        eprintln!(
+            "{} {} error(s) encountered.",
+            "Errors:".bold().red(),
+            total_errors
+        );
+        std::process::exit(1);
     }
 }
 
 // Returns the number of items (files/symlinks/dirs) processed/deleted.
-fn fast_remove(path_ref: impl AsRef<Path>, verbose: bool, dry_run: bool) -> Result<u64, String> {
+fn fast_remove(
+    path_ref: impl AsRef<Path>,
+    verbose: bool,
+    dry_run: bool,
+    continue_on_error: bool,
+) -> Result<u64, String> {
     let path = path_ref.as_ref();
     let mut items_removed_count = 0;
 
@@ -171,7 +214,7 @@ fn fast_remove(path_ref: impl AsRef<Path>, verbose: bool, dry_run: bool) -> Resu
         let results: Vec<Result<u64, String>> = children
             .par_bridge()
             .filter_map(|entry_result| match entry_result {
-                Ok(entry) => Some(fast_remove(entry.path(), verbose, dry_run)),
+                Ok(entry) => Some(fast_remove(entry.path(), verbose, dry_run, continue_on_error)),
                 Err(e) => {
                     // Log and return error for problematic directory entries
                     let error_msg = format!("Error accessing directory entry in {:?}: {}", path, e);
@@ -181,11 +224,28 @@ fn fast_remove(path_ref: impl AsRef<Path>, verbose: bool, dry_run: bool) -> Resu
             })
             .collect();
 
+        let mut errors = Vec::new();
         for result in results {
             match result {
                 Ok(count) => items_removed_count += count,
-                Err(e) => return Err(e), // Propagate error without re-wrapping
+                Err(e) => {
+                    if continue_on_error {
+                        errors.push(e);
+                    } else {
+                        return Err(e); // Propagate error immediately
+                    }
+                }
             }
+        }
+
+        // If there were errors and we're continuing, report them but don't fail the whole operation
+        if !errors.is_empty() && continue_on_error {
+            eprintln!(
+                "  {} {} error(s) in subdirectory {:?}, continuing...",
+                "Warning:".yellow(),
+                errors.len(),
+                path
+            );
         }
 
         if verbose || dry_run {
