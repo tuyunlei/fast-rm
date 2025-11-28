@@ -161,17 +161,10 @@ fn fast_remove(path_ref: impl AsRef<Path>, verbose: bool, dry_run: bool) -> Resu
             .filter_map(|entry_result| match entry_result {
                 Ok(entry) => Some(fast_remove(entry.path(), verbose, dry_run)),
                 Err(e) => {
-                    // Log and skip problematic entries, or return Err to halt for this directory
-                    eprintln!(
-                        "  {}: {:?} (entry path unknown) - {}",
-                        "Error accessing directory entry".red().dimmed(),
-                        path,
-                        e
-                    );
-                    Some(Err(format!(
-                        "Error accessing an entry in {:?}: {}",
-                        path, e
-                    ))) // Make it an error to propagate
+                    // Log and return error for problematic directory entries
+                    let error_msg = format!("Error accessing directory entry in {:?}: {}", path, e);
+                    eprintln!("  {}", error_msg.red().dimmed());
+                    Some(Err(error_msg))
                 }
             })
             .collect();
@@ -179,12 +172,7 @@ fn fast_remove(path_ref: impl AsRef<Path>, verbose: bool, dry_run: bool) -> Resu
         for result in results {
             match result {
                 Ok(count) => items_removed_count += count,
-                Err(e) => {
-                    return Err(format!(
-                        "Error processing subdirectory/file within {:?}: {}",
-                        path, e
-                    ));
-                }
+                Err(e) => return Err(e), // Propagate error without re-wrapping
             }
         }
 
