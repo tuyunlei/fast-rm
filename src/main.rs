@@ -92,33 +92,8 @@ fn fast_remove(path_ref: impl AsRef<Path>, verbose: bool, dry_run: bool) -> Resu
     }
 
     // Use symlink_metadata to correctly assess symlinks, even broken ones.
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(md) => md,
-        Err(_) if !path.exists() => {
-            // Path doesn't exist and isn't a symlink that symlink_metadata would find (e.g. truly non-existent)
-            return Err(format!("Path does not exist"));
-        }
-        Err(e) => {
-            // Other errors for symlink_metadata, or path exists but isn't a symlink
-            // If it's not a symlink, path.exists() should be true if it's a file/dir
-            if !path.exists() {
-                return Err(format!(
-                    "Path does not exist or is a broken link, and failed to get metadata: {}",
-                    e
-                ));
-            }
-            // Fallback to regular metadata if symlink_metadata failed but path exists (should be rare)
-            match path.metadata() {
-                Ok(md) => md,
-                Err(e_reg) => {
-                    return Err(format!(
-                        "Failed to get metadata for {:?}: {} (symlink_metadata also failed: {})",
-                        path, e_reg, e
-                    ))
-                }
-            }
-        }
-    };
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("Failed to get metadata for {:?}: {}", path, e))?;
 
     if metadata.file_type().is_symlink() {
         if verbose || dry_run {
