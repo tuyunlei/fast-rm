@@ -24,10 +24,22 @@ struct Cli {
     /// Do not actually remove anything, just show what would be done
     #[clap(short = 'n', long = "dry-run")]
     dry_run: bool,
+
+    /// Number of threads to use (defaults to number of CPU cores)
+    #[clap(short = 'j', long = "threads")]
+    threads: Option<usize>,
 }
 
 fn main() {
     let cli = Cli::parse();
+
+    // Configure Rayon thread pool to prevent resource exhaustion from nested parallelism
+    if let Some(num_threads) = cli.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build_global()
+            .expect("Failed to initialize thread pool");
+    }
 
     if cli.dry_run {
         println!(
