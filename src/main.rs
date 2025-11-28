@@ -416,3 +416,297 @@ fn fast_remove(path_ref: impl AsRef<Path>, config: &RemoveConfig) -> Result<u64,
         Err(RemoveError::UnsupportedType(path.to_path_buf()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::os::unix::fs as unix_fs;
+    use tempfile::TempDir;
+
+    /// 🛡️ SAFETY GUARD: Validate that path is within allowed test directory
+    /// This prevents accidental deletion of files outside the test sandbox
+    fn validate_test_path(path: &Path, allowed_root: &Path) -> Result<(), String> {
+        // Canonicalize both paths to resolve symlinks and relative paths
+        let canonical_path = if path.exists() {
+            path.canonicalize()
+                .map_err(|e| format!("Cannot canonicalize path {:?}: {}", path, e))?
+        } else {
+            // If path doesn't exist yet, canonicalize parent instead
+            let parent = path
+                .parent()
+                .ok_or_else(|| "No parent directory".to_string())?;
+            let canonical_parent = parent
+                .canonicalize()
+                .map_err(|e| format!("Cannot canonicalize parent {:?}: {}", parent, e))?;
+            canonical_parent.join(path.file_name().unwrap())
+        };
+
+        let canonical_root = allowed_root
+            .canonicalize()
+            .map_err(|e| format!("Cannot canonicalize root {:?}: {}", allowed_root, e))?;
+
+        if !canonical_path.starts_with(&canonical_root) {
+            panic!(
+                "🚨 SAFETY VIOLATION: Path {:?} is outside allowed test directory {:?}",
+                canonical_path, canonical_root
+            );
+        }
+        Ok(())
+    }
+
+    // ===== STAGE 1: Pure Logic Tests (No File Operations) =====
+
+    #[test]
+    fn test_remove_config_from_cli() {
+        let cli = Cli {
+            paths: vec![PathBuf::from("/tmp/test")],
+            verbose: true,
+            dry_run: false,
+            threads: None,
+            continue_on_error: true,
+        };
+
+        let config = RemoveConfig::from_cli(&cli);
+        assert_eq!(config.verbose, true);
+        assert_eq!(config.dry_run, false);
+        assert_eq!(config.continue_on_error, true);
+    }
+
+    #[test]
+    fn test_path_deduplication() {
+        let temp_dir = TempDir::new().unwrap();
+        let path1 = temp_dir.path().join("file.txt");
+        let path2 = temp_dir.path().join("file.txt"); // duplicate
+
+        // Create the file so canonicalize works
+        File::create(&path1).unwrap();
+
+        let paths = vec![path1.clone(), path2.clone()];
+        let result = deduplicate_and_check_paths(&paths).unwrap();
+
+        // Should deduplicate to 1 path
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_path_overlap_detection() {
+        let temp_dir = TempDir::new().unwrap();
+        let parent = temp_dir.path().join("parent");
+        let child = parent.join("child");
+
+        // Create both directories
+        std::fs::create_dir_all(&child).unwrap();
+
+        let paths = vec![parent.clone(), child.clone()];
+        let result = deduplicate_and_check_paths(&paths);
+
+        // Should detect overlap and return error
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, RemoveError::PathOverlap(_)));
+    }
+
+    #[test]
+    fn test_remove_error_display() {
+        let path = PathBuf::from("/tmp/test");
+        let error = RemoveError::UnsupportedType(path.clone());
+        let display = format!("{}", error);
+        assert!(display.contains("/tmp/test"));
+        assert!(display.contains("not a file, directory, or symlink"));
+    }
+
+    // ===== STAGE 2: Dry-Run Tests (No Actual Deletion) =====
+
+    #[test]
+    fn test_dry_run_does_not_delete() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_file = temp_dir.path().join("test.txt");
+
+        // Create test file
+        std::fs::write(&test_file, "test content").unwrap();
+        assert!(test_file.exists());
+
+        // Run with dry_run = true
+        let config = RemoveConfig {
+            verbose: false,
+            dry_run: true,
+            continue_on_error: false,
+        };
+
+        let result = remove_file(&test_file, &config);
+        assert!(result.is_ok());
+
+        // File should still exist
+        assert!(test_file.exists(), "Dry-run should not delete files");
+    }
+
+    #[test]
+    fn test_dry_run_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_dir = temp_dir.path().join("testdir");
+        std::fs::create_dir(&test_dir).unwrap();
+
+        let config = RemoveConfig {
+            verbose: false,
+            dry_run: true,
+            continue_on_error: false,
+        };
+
+        let result = fast_remove(&test_dir, &config);
+        assert!(result.is_ok());
+
+        // Directory should still exist
+        assert!(test_dir.exists(), "Dry-run should not delete directories");
+    }
+
+    // ===== STAGE 3: Real Deletion Tests (With Path Guard) =====
+    // These tests use #[ignore] and require explicit opt-in
+    // Run with: cargo test -- --ignored
+
+    #[test]
+    #[ignore = "Performs real file deletion - run explicitly with --ignored"]
+    fn test_remove_single_file_guarded() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_file = temp_dir.path().join("test.txt");
+
+        // Create test file
+        std::fs::write(&test_file, "test content").unwrap();
+        assert!(test_file.exists());
+
+        // 🛡️ Safety check
+        validate_test_path(&test_file, temp_dir.path()).unwrap();
+
+        let config = RemoveConfig {
+            verbose: false,
+            dry_run: false,
+            continue_on_error: false,
+        };
+
+        let result = remove_file(&test_file, &config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1);
+
+        // File should be deleted
+        assert!(!test_file.exists());
+    }
+
+    #[test]
+    #[ignore = "Performs real file deletion - run explicitly with --ignored"]
+    fn test_remove_empty_directory_guarded() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_dir = temp_dir.path().join("empty_dir");
+        std::fs::create_dir(&test_dir).unwrap();
+
+        // 🛡️ Safety check
+        validate_test_path(&test_dir, temp_dir.path()).unwrap();
+
+        let config = RemoveConfig {
+            verbose: false,
+            dry_run: false,
+            continue_on_error: false,
+        };
+
+        let result = fast_remove(&test_dir, &config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1);
+        assert!(!test_dir.exists());
+    }
+
+    #[test]
+    #[ignore = "Performs real file deletion - run explicitly with --ignored"]
+    fn test_remove_nested_directory_guarded() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_dir = temp_dir.path().join("nested");
+        let sub_dir = test_dir.join("subdir");
+        let file1 = test_dir.join("file1.txt");
+        let file2 = sub_dir.join("file2.txt");
+
+        // Create structure
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        std::fs::write(&file1, "content1").unwrap();
+        std::fs::write(&file2, "content2").unwrap();
+
+        // 🛡️ Safety checks
+        validate_test_path(&test_dir, temp_dir.path()).unwrap();
+        validate_test_path(&file1, temp_dir.path()).unwrap();
+        validate_test_path(&file2, temp_dir.path()).unwrap();
+
+        let config = RemoveConfig {
+            verbose: false,
+            dry_run: false,
+            continue_on_error: false,
+        };
+
+        let result = fast_remove(&test_dir, &config);
+        assert!(result.is_ok());
+        // Should remove: file1, file2, subdir, nested = 4 items
+        assert_eq!(result.unwrap(), 4);
+        assert!(!test_dir.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "Performs real file deletion - run explicitly with --ignored"]
+    fn test_remove_symlink_guarded() {
+        let temp_dir = TempDir::new().unwrap();
+        let target = temp_dir.path().join("target.txt");
+        let link = temp_dir.path().join("link.txt");
+
+        // Create target and symlink
+        std::fs::write(&target, "target content").unwrap();
+        unix_fs::symlink(&target, &link).unwrap();
+        assert!(link.exists());
+
+        // 🛡️ Safety check
+        validate_test_path(&link, temp_dir.path()).unwrap();
+
+        let config = RemoveConfig {
+            verbose: false,
+            dry_run: false,
+            continue_on_error: false,
+        };
+
+        let result = remove_symlink(&link, &config);
+        assert!(result.is_ok());
+        assert!(!link.exists());
+        assert!(target.exists(), "Target should not be deleted");
+    }
+
+    #[test]
+    #[ignore = "Performs real file deletion - run explicitly with --ignored"]
+    fn test_continue_on_error_guarded() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_dir = temp_dir.path().join("test");
+        let file1 = test_dir.join("file1.txt");
+        let file2 = test_dir.join("file2.txt");
+
+        std::fs::create_dir(&test_dir).unwrap();
+        std::fs::write(&file1, "content1").unwrap();
+        std::fs::write(&file2, "content2").unwrap();
+
+        // Make file1 read-only to cause error (on Unix)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = file1.metadata().unwrap().permissions();
+            perms.set_mode(0o000);
+            std::fs::set_permissions(&file1, perms).unwrap();
+        }
+
+        // 🛡️ Safety check
+        validate_test_path(&test_dir, temp_dir.path()).unwrap();
+
+        let config = RemoveConfig {
+            verbose: false,
+            dry_run: false,
+            continue_on_error: true, // Continue despite errors
+        };
+
+        let result = fast_remove(&test_dir, &config);
+
+        // Should succeed with continue_on_error
+        // (Though some items might fail to delete due to permissions)
+        assert!(result.is_ok());
+    }
+}
