@@ -21,3 +21,7 @@ tempfile = "3.8"
 [[bench]]
 name = "deletion_benchmark"
 harness = false
+
+[[bench]]
+name = "overhead_measurement"
+harness = false
