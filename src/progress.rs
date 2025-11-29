@@ -2,7 +2,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::config::Verbosity;
@@ -110,6 +110,9 @@ pub struct ProgressDisplay {
     file_bars: Vec<ProgressBar>,
     error_bar: Option<ProgressBar>,
     verbosity: Verbosity,
+    // TUI-local caches to avoid allocating Vec on every update
+    recent_cache: Mutex<std::collections::VecDeque<Arc<Path>>>,
+    error_cache: Mutex<std::collections::VecDeque<(Arc<Path>, String)>>,
 }
 
 impl ProgressDisplay {
@@ -166,6 +169,8 @@ impl ProgressDisplay {
             file_bars,
             error_bar,
             verbosity,
+            recent_cache: Mutex::new(std::collections::VecDeque::new()),
+            error_cache: Mutex::new(std::collections::VecDeque::new()),
         }
     }
 
@@ -185,11 +190,21 @@ impl ProgressDisplay {
         self.main_bar.set_message(main_msg);
 
         if !self.file_bars.is_empty() {
-            let recent_files = progress.get_recent_files();
-            let display_count = self.file_bars.len().min(recent_files.len());
+            // Drain new files from channel into local cache
+            let mut cache = self.recent_cache.lock().unwrap();
+            while let Ok(path) = progress.recent_rx.try_recv() {
+                cache.push_back(path);
+                // Keep only last 50 items
+                while cache.len() > 50 {
+                    cache.pop_front();
+                }
+            }
+
+            // Display recent files from cache (no allocation)
+            let display_count = self.file_bars.len().min(cache.len());
             for (i, bar) in self.file_bars.iter().enumerate() {
                 if i < display_count {
-                    let file = &recent_files[recent_files.len() - display_count + i];
+                    let file = &cache[cache.len() - display_count + i];
                     bar.set_message(format!("{:?}", file));
                 } else {
                     bar.set_message("");
@@ -199,8 +214,18 @@ impl ProgressDisplay {
 
         if let Some(err_bar) = &self.error_bar {
             if errors > 0 {
-                let error_files = progress.get_error_files();
-                if let Some((path, msg)) = error_files.last() {
+                // Drain new errors from channel into local cache
+                let mut cache = self.error_cache.lock().unwrap();
+                while let Ok(error) = progress.error_rx.try_recv() {
+                    cache.push_back(error);
+                    // Keep only last 50 items
+                    while cache.len() > 50 {
+                        cache.pop_front();
+                    }
+                }
+
+                // Display last error from cache (no allocation)
+                if let Some((path, msg)) = cache.back() {
                     err_bar.set_message(format!("Last error: {:?} - {}", path, msg));
                 }
             } else {
