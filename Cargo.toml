@@ -25,3 +25,7 @@ harness = false
 [[bench]]
 name = "overhead_measurement"
 harness = false
+
+[[bench]]
+name = "context_switch_test"
+harness = false
