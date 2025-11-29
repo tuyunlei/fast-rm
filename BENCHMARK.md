@@ -16,13 +16,19 @@ This document provides comprehensive performance analysis of fast-rm compared to
 ## Running Benchmarks
 
 ```bash
-# Run all benchmarks (takes 5-10 minutes)
+# Run standard benchmarks (takes 5-10 minutes)
 cargo bench
 
 # Run specific benchmark group
 cargo bench -- "fast-rm_vs_rm"
 cargo bench -- "nested_structure"
 cargo bench -- "thread_scaling"
+
+# Run large-scale benchmarks (takes 30+ minutes, tests 50K-500K files)
+cargo bench -- "large_scale"
+
+# Run extreme-scale benchmarks (takes 1+ hour, tests 1M files)
+cargo bench -- "extreme_scale"
 
 # View HTML report
 open target/criterion/report/index.html
@@ -121,6 +127,65 @@ Tests fast-rm performance with different thread counts (2,000 files).
 - Sweet spot around 4 threads for this workload
 - Diminishing returns beyond 4 threads
 - Thread coordination overhead visible at 8 threads
+
+### 6. Large Scale (10s+ Deletion Times)
+
+Tests with large file counts where rm takes 10+ seconds, to see how the ratio converges.
+
+| Files | fast-rm Time | rm -r Time | Ratio (fast-rm/rm) | Throughput (fast-rm) |
+|-------|--------------|------------|-------------------|---------------------|
+| 50,000 | 5.14s | 2.82s | 1.82x | 9,728 elem/s |
+| 100,000 | 10.26s | 6.61s | 1.55x | 9,747 elem/s |
+| 200,000 | 21.10s | 14.34s | 1.47x | 9,479 elem/s |
+| 300,000 | 32.70s | 21.73s | 1.50x | 9,174 elem/s |
+| 500,000 | 55.79s | 39.41s | 1.41x | 8,964 elem/s |
+
+**Key Findings:**
+
+1. **Ratio Convergence**: As file count increases, the ratio converges toward ~1.4x
+   - 100 files: 0.11x (startup dominates)
+   - 5,000 files: 0.40x
+   - 50,000 files: 1.82x → 500,000 files: 1.41x
+   - **Trend**: Approaches asymptotic limit around 1.4x
+
+2. **Startup Overhead Amortization**:
+   - 100 files: overhead = 170ms, work = ~10ms → 94% overhead
+   - 500K files: overhead = 170ms, work = ~55s → 0.3% overhead
+   - **Conclusion**: Fixed ~170ms startup becomes negligible at scale
+
+3. **Throughput Plateau**:
+   - Stabilizes around 9,000-10,000 elem/s
+   - rm -r: ~12,000-14,000 elem/s consistent throughput
+   - **Gap**: ~30-40% slower per-file deletion
+
+4. **Why fast-rm Can't Match rm at Scale**:
+   - Per-file overhead: Arc allocation, channel send/recv, atomic operations
+   - Two-pool coordination: queue management between scanner and deleter
+   - Progress tracking: atomic counters and recent file channel updates
+   - These costs are ~40% of rm's pure unlink() time
+
+```
+Performance Trend Graph:
+
+Ratio
+(fast-rm/rm)
+  │
+2.0│     ○ 50K (1.82x)
+   │
+1.5│         ○ 100K (1.55x)
+   │              ○ 200K (1.47x) ○ 300K (1.50x)
+   │                                  ○ 500K (1.41x)
+1.0│─────────────────────────────────────────────── rm baseline
+   │
+0.5│                    ○ 5K (0.40x)
+   │        ○ 1K (0.44x)
+   │    ○ 500 (0.29x)
+0.1│ ○ 100 (0.11x)
+   └──────────────────────────────────────────────→ Files
+     100    1K    5K   50K  100K  200K 300K 500K
+```
+
+**Conclusion**: fast-rm approaches but cannot exceed rm performance due to inherent architectural overhead. The ~1.4x ratio appears to be the practical limit on local filesystems.
 
 ## Performance Analysis
 

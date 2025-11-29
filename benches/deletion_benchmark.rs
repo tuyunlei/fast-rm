@@ -27,6 +27,78 @@ fn create_flat_structure(base: &Path, num_files: usize) -> usize {
     num_files
 }
 
+/// Create a flat directory with N files using parallel creation for large-scale tests
+/// Uses multiple threads to speed up file creation
+fn create_flat_structure_parallel(base: &Path, num_files: usize) -> usize {
+    use std::sync::Arc;
+    use std::thread;
+
+    let base = Arc::new(base.to_path_buf());
+    let num_threads = num_cpus::get().min(16);
+    let files_per_thread = num_files / num_threads;
+    let remainder = num_files % num_threads;
+
+    let handles: Vec<_> = (0..num_threads)
+        .map(|t| {
+            let base = Arc::clone(&base);
+            let start = t * files_per_thread + t.min(remainder);
+            let count = files_per_thread + if t < remainder { 1 } else { 0 };
+
+            thread::spawn(move || {
+                for i in start..(start + count) {
+                    let file_path = base.join(format!("file_{:08}.txt", i));
+                    let mut file = File::create(&file_path).unwrap();
+                    writeln!(file, "test content {}", i).unwrap();
+                }
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    num_files
+}
+
+/// Create a large nested structure with many directories and files
+/// Designed to create 100K+ items efficiently
+fn create_large_nested_structure(base: &Path, dirs_per_level: usize, files_per_dir: usize, depth: usize) -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let count = Arc::new(AtomicUsize::new(0));
+
+    fn recurse(
+        path: &Path,
+        dirs_per_level: usize,
+        files_per_dir: usize,
+        depth: usize,
+        count: &AtomicUsize,
+    ) {
+        // Create files at this level
+        for i in 0..files_per_dir {
+            let file = path.join(format!("f_{}.txt", i));
+            let mut f = File::create(&file).unwrap();
+            writeln!(f, "x").unwrap();
+            count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        if depth > 0 {
+            // Create subdirectories and recurse
+            for i in 0..dirs_per_level {
+                let dir = path.join(format!("d_{}", i));
+                fs::create_dir(&dir).unwrap();
+                count.fetch_add(1, Ordering::Relaxed);
+                recurse(&dir, dirs_per_level, files_per_dir, depth - 1, count);
+            }
+        }
+    }
+
+    recurse(base, dirs_per_level, files_per_dir, depth, &count);
+    count.load(Ordering::Relaxed)
+}
+
 /// Create a nested directory structure
 /// Returns total number of items (files + directories)
 fn create_nested_structure(base: &Path, depth: usize, breadth: usize) -> usize {
@@ -491,6 +563,201 @@ fn bench_thread_scaling(c: &mut Criterion) {
 }
 
 // ============================================================================
+// Benchmarks: Large Scale (10s+ deletion times)
+// ============================================================================
+
+fn bench_large_scale_flat(c: &mut Criterion) {
+    let fast_rm = get_fast_rm_binary();
+    let mut group = c.benchmark_group("large_scale_flat");
+    group.sampling_mode(SamplingMode::Flat);
+    group.sample_size(10); // Fewer samples for long-running tests
+
+    // Large scale configurations to achieve 10s+ rm times
+    // Based on ~50μs per file on tmpfs, we need:
+    // - 200K files for ~10s
+    // - 600K files for ~30s
+    let configs = [
+        ("050k_files", 50_000),
+        ("100k_files", 100_000),
+        ("200k_files", 200_000),
+        ("500k_files", 500_000),
+    ];
+
+    for (name, file_count) in configs {
+        group.throughput(Throughput::Elements(file_count as u64));
+        // Set measurement time based on expected duration
+        let measurement_secs = match file_count {
+            n if n >= 500_000 => 120,
+            n if n >= 200_000 => 60,
+            n if n >= 100_000 => 30,
+            _ => 20,
+        };
+        group.measurement_time(std::time::Duration::from_secs(measurement_secs));
+
+        // Benchmark fast-rm
+        group.bench_with_input(
+            BenchmarkId::new("fast-rm", name),
+            &file_count,
+            |b, &count| {
+                b.iter_with_setup(
+                    || {
+                        let temp_dir = TempDir::new().unwrap();
+                        let target = create_target_dir(&temp_dir);
+                        create_flat_structure_parallel(&target, count);
+                        (temp_dir, target)
+                    },
+                    |(temp_dir, target)| {
+                        run_fast_rm(&target, &fast_rm);
+                        drop(temp_dir);
+                        black_box(())
+                    },
+                );
+            },
+        );
+
+        // Benchmark system rm -r
+        group.bench_with_input(BenchmarkId::new("rm -r", name), &file_count, |b, &count| {
+            b.iter_with_setup(
+                || {
+                    let temp_dir = TempDir::new().unwrap();
+                    let target = create_target_dir(&temp_dir);
+                    create_flat_structure_parallel(&target, count);
+                    (temp_dir, target)
+                },
+                |(temp_dir, target)| {
+                    run_system_rm(&target);
+                    drop(temp_dir);
+                    black_box(())
+                },
+            );
+        });
+    }
+
+    group.finish();
+}
+
+fn bench_large_scale_nested(c: &mut Criterion) {
+    let fast_rm = get_fast_rm_binary();
+    let mut group = c.benchmark_group("large_scale_nested");
+    group.sampling_mode(SamplingMode::Flat);
+    group.sample_size(10);
+    group.measurement_time(std::time::Duration::from_secs(60));
+
+    // Large nested structures
+    // (name, dirs_per_level, files_per_dir, depth) -> approximate item count
+    let configs = [
+        // 10 dirs × 100 files × 4 levels ≈ 111K items
+        ("100k_nested", 10, 100, 4),
+        // 10 dirs × 50 files × 5 levels ≈ 555K items
+        ("500k_nested", 10, 50, 5),
+    ];
+
+    for (name, dirs, files, depth) in configs {
+        // Calculate expected items for throughput
+        let temp = TempDir::new().unwrap();
+        let target = create_target_dir(&temp);
+        let item_count = create_large_nested_structure(&target, dirs, files, depth);
+        drop(temp);
+
+        println!("Config {}: {} items", name, item_count);
+        group.throughput(Throughput::Elements(item_count as u64));
+
+        // fast-rm
+        group.bench_with_input(
+            BenchmarkId::new("fast-rm", name),
+            &(dirs, files, depth),
+            |b, &(d, f, dep)| {
+                b.iter_with_setup(
+                    || {
+                        let temp_dir = TempDir::new().unwrap();
+                        let target = create_target_dir(&temp_dir);
+                        create_large_nested_structure(&target, d, f, dep);
+                        (temp_dir, target)
+                    },
+                    |(temp_dir, target)| {
+                        run_fast_rm(&target, &fast_rm);
+                        drop(temp_dir);
+                        black_box(())
+                    },
+                );
+            },
+        );
+
+        // rm -r
+        group.bench_with_input(
+            BenchmarkId::new("rm -r", name),
+            &(dirs, files, depth),
+            |b, &(d, f, dep)| {
+                b.iter_with_setup(
+                    || {
+                        let temp_dir = TempDir::new().unwrap();
+                        let target = create_target_dir(&temp_dir);
+                        create_large_nested_structure(&target, d, f, dep);
+                        (temp_dir, target)
+                    },
+                    |(temp_dir, target)| {
+                        run_system_rm(&target);
+                        drop(temp_dir);
+                        black_box(())
+                    },
+                );
+            },
+        );
+    }
+
+    group.finish();
+}
+
+/// Benchmark specifically designed to test scenarios where rm takes 30+ seconds
+fn bench_extreme_scale(c: &mut Criterion) {
+    let fast_rm = get_fast_rm_binary();
+    let mut group = c.benchmark_group("extreme_scale");
+    group.sampling_mode(SamplingMode::Flat);
+    group.sample_size(5); // Very few samples for extremely long tests
+    group.measurement_time(std::time::Duration::from_secs(180)); // 3 minutes
+
+    // 1 million files - should take ~50s for rm on tmpfs
+    let file_count = 1_000_000;
+    group.throughput(Throughput::Elements(file_count as u64));
+
+    // Benchmark fast-rm
+    group.bench_function("fast-rm/1M_files", |b| {
+        b.iter_with_setup(
+            || {
+                let temp_dir = TempDir::new().unwrap();
+                let target = create_target_dir(&temp_dir);
+                create_flat_structure_parallel(&target, file_count);
+                (temp_dir, target)
+            },
+            |(temp_dir, target)| {
+                run_fast_rm(&target, &fast_rm);
+                drop(temp_dir);
+                black_box(())
+            },
+        );
+    });
+
+    // Benchmark system rm -r
+    group.bench_function("rm -r/1M_files", |b| {
+        b.iter_with_setup(
+            || {
+                let temp_dir = TempDir::new().unwrap();
+                let target = create_target_dir(&temp_dir);
+                create_flat_structure_parallel(&target, file_count);
+                (temp_dir, target)
+            },
+            |(temp_dir, target)| {
+                run_system_rm(&target);
+                drop(temp_dir);
+                black_box(())
+            },
+        );
+    });
+
+    group.finish();
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -503,4 +770,22 @@ criterion_group!(
     bench_thread_scaling,   // Thread pool tuning
 );
 
-criterion_main!(benches);
+// Separate group for large-scale tests (run with: cargo bench -- "large_scale")
+criterion_group!(
+    name = large_scale_benches;
+    config = Criterion::default()
+        .sample_size(10)
+        .measurement_time(std::time::Duration::from_secs(60));
+    targets = bench_large_scale_flat, bench_large_scale_nested
+);
+
+// Extreme scale tests (run with: cargo bench -- "extreme_scale")
+criterion_group!(
+    name = extreme_benches;
+    config = Criterion::default()
+        .sample_size(5)
+        .measurement_time(std::time::Duration::from_secs(180));
+    targets = bench_extreme_scale
+);
+
+criterion_main!(benches, large_scale_benches, extreme_benches);
