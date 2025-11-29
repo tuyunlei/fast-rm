@@ -1,184 +1,181 @@
-# Fast-RM Performance Benchmark Report
+# fast-rm Performance Benchmarks
 
-## Test Environment
+This document describes the benchmark suite for fast-rm and provides guidance on interpreting results.
 
-- **OS**: macOS (Darwin 24.6.0)
-- **CPU**: Apple Silicon (CPU cores detected automatically)
-- **Rust**: Version 1.91.0+ (rustc)
-- **Build**: Release mode with optimizations (`--release`)
-- **Date**: 2025-11-29
+## Running Benchmarks
 
-## Benchmark Results
+```bash
+# Run all benchmarks (takes 5-10 minutes)
+cargo bench
 
-### Test 1: Small Directory (100 files, flat structure)
+# Run specific benchmark group
+cargo bench -- "fast-rm_vs_rm"
+cargo bench -- "nested_structure"
+cargo bench -- "thread_scaling"
 
-```
-Items:       101 (100 files + 1 directory)
-Time:        0.435s
-Throughput:  ~232 items/sec
-```
-
-**Analysis**:
-- Small dataset shows baseline overhead of process startup and TUI initialization
-- Most time spent in process overhead rather than actual deletion
-
-### Test 2: Medium Directory (1,000 files, flat structure)
-
-```
-Items:       1,001 (1,000 files + 1 directory)
-Time:        0.513s
-Throughput:  1,948 items/sec
+# View HTML report
+open target/criterion/report/index.html
 ```
 
-**Analysis**:
-- Amortized overhead shows much better throughput
-- Two-pool architecture benefits become visible
-- Queue coordination overhead is negligible
+## Benchmark Groups
 
-### Test 3: Nested Structure (depth=3, breadth=5)
+### 1. fast-rm vs rm -r (`fast-rm_vs_rm`)
+
+**Primary benchmark** - Direct comparison with system `rm -r` command.
+
+| Test Case | Files | Description |
+|-----------|-------|-------------|
+| 0100_files | 100 | Small directory, measures startup overhead |
+| 0500_files | 500 | Medium directory |
+| 1000_files | 1,000 | Standard test case |
+| 2000_files | 2,000 | Larger dataset |
+| 5000_files | 5,000 | Stress test |
+
+**What to expect:**
+- `rm -r` is typically faster for small datasets (< 500 files) due to fast-rm's startup overhead
+- fast-rm becomes competitive or faster at larger scales where parallelism pays off
+- Both are ultimately I/O-bound by filesystem performance
+
+### 2. Nested Directory Structure (`nested_structure`)
+
+Tests performance on hierarchical directory trees.
+
+| Test Case | Structure | Description |
+|-----------|-----------|-------------|
+| shallow_wide | depth=2, breadth=10 | Wide, shallow tree |
+| medium | depth=3, breadth=5 | Balanced structure |
+| deep_narrow | depth=5, breadth=3 | Deeper hierarchy |
+| very_deep | depth=8, breadth=2 | Very deep nesting |
+
+**What to expect:**
+- Nested structures benefit from fast-rm's parallel scanning
+- Deeper structures show more variance due to directory traversal patterns
+
+### 3. Deep Directory Chain (`deep_chain`)
+
+Worst-case scenario for recursive deletion - a single deep chain.
+
+| Test Case | Depth | Files/Level |
+|-----------|-------|-------------|
+| depth_10 | 10 | 5 |
+| depth_20 | 20 | 5 |
+| depth_50 | 50 | 3 |
+
+**What to expect:**
+- Tests the scanner's depth-first traversal efficiency
+- Verifies correct parent-after-children deletion ordering
+
+### 4. Mixed File Sizes (`mixed_file_sizes`)
+
+Tests impact of file size on deletion performance.
+
+| Test Case | Small (<1KB) | Medium (~10KB) | Large (~100KB) |
+|-----------|--------------|----------------|----------------|
+| mostly_small | 900 | 90 | 10 |
+| balanced | 500 | 300 | 200 |
+| mostly_large | 100 | 100 | 800 |
+
+**What to expect:**
+- File size has minimal impact on deletion time (unlink is fast)
+- Larger files may show slight overhead from filesystem metadata updates
+
+### 5. Thread Scaling (`thread_scaling`)
+
+Tests parallel efficiency with different thread counts.
+
+| Threads | Configuration |
+|---------|---------------|
+| 1 | Single-threaded baseline |
+| 2 | Minimal parallelism |
+| 4 | Sweet spot for most systems |
+| 8 | High parallelism |
+
+**What to expect:**
+- Diminishing returns beyond 4 threads for most workloads
+- I/O-bound nature limits scaling benefits
+- Thread coordination overhead visible at high thread counts
+
+## Interpreting Results
+
+### Criterion Output
 
 ```
-Structure:   3 levels deep, 5 items per level
-Items:       304 total (files + directories)
-Time:        0.397s
-Throughput:  ~765 items/sec
+fast-rm_vs_rm/fast-rm/1000_files
+                        time:   [512.3 ms 518.7 ms 525.1 ms]
+                        thrpt:  [1904 elem/s 1928 elem/s 1952 elem/s]
 ```
 
-**Analysis**:
-- Faster than flat structure due to better cache locality
-- Depth-first traversal benefits from directory metadata caching
-- Scanner enqueues all items quickly, deleters process in parallel
+- **time**: [lower bound, estimate, upper bound] with 95% confidence
+- **thrpt**: Throughput in elements (files) per second
+- **change**: Comparison with previous run (if available)
 
-### Test 4: Thread Scaling (2,000 files)
+### Performance Factors
 
-| Threads | Time    | Throughput  | Scaling Efficiency |
-|---------|---------|-------------|--------------------|
-| 1       | 0.558s  | 3,585/sec   | 100% (baseline)    |
-| 2       | 0.476s  | 4,198/sec   | 117% (+17%)        |
-| 4       | 0.448s  | 4,465/sec   | 125% (+25%)        |
-| 8       | 0.558s  | 3,582/sec   | 100% (-0%)         |
+Results are affected by:
 
-**Analysis**:
-- **Best performance**: 4 threads (optimal for this workload)
-- **Diminishing returns**: Beyond 4 threads due to:
-  1. I/O bottleneck (filesystem operations serialized by OS)
-  2. Overhead of thread coordination outweighs benefits
-  3. Test dataset not large enough to benefit from 8 threads
-- **Sweet spot**: 4 threads = 25% faster than single-threaded
-
-**Thread Pool Recommendations**:
-- For small files (< 10,000): Use 2-4 threads
-- For large datasets (> 100,000): Use 8+ threads
-- Default (CPU cores) works well for most cases
-
-### Test 5: Comparison with System `rm -rf`
-
-| Tool          | Time   | Throughput |
-|---------------|--------|------------|
-| **fast-rm**   | 0.389s | 2,571/sec  |
-| **system rm** | 0.327s | 3,058/sec  |
-| **Speedup**   | 0.84x  | *(slower)* |
-
-**Analysis**:
-- `fast-rm` is currently **16% slower** than system `rm -rf` on small datasets
-- This is expected and acceptable because:
-  1. **Process overhead**: fast-rm has TUI initialization, progress tracking
-  2. **Queue coordination**: Scan/delete separation adds minimal overhead
-  3. **Safety features**: Path overlap detection, symlink handling
-  4. **Rich feedback**: Real-time progress display vs silent deletion
-
-**When fast-rm excels**:
-- Large datasets (> 10,000 items): Parallel processing shows bigger gains
-- Nested structures: Concurrent scanning pays off
-- Need progress tracking: TUI provides visibility
-- Safety-critical operations: Dry-run mode, continue-on-error
-
-## Performance Characteristics
-
-### Strengths
-
-1. **Scalable throughput**: 1,948-4,465 items/sec (depending on parallelism)
-2. **Thread scaling**: 25% improvement with 4 threads vs single-threaded
-3. **Consistent performance**: No significant degradation on nested structures
-4. **Real-time visibility**: Queue depth and progress without performance penalty
-
-### Overhead Sources
-
-1. **Process startup**: ~100-200ms (Rust binary + dependencies)
-2. **TUI initialization**: ~50-100ms (indicatif + crossterm)
-3. **Progress tracking**: Minimal (<1% overhead due to lock-free design)
-4. **Queue coordination**: Negligible (<0.5% overhead)
-
-### Bottlenecks Identified
-
-1. **Filesystem I/O**: Primary bottleneck (>90% of time)
-   - Filesystem operations are inherently serial
-   - OS kernel serializes many fs operations for consistency
-   - SSD/HDD speed is the ultimate limit
-
-2. **Thread coordination**: Minimal but present
-   - AtomicBool checks every 100ms (deleter shutdown logic)
-   - Channel depth tracking (2 atomic loads per TUI update)
-
-3. **Small dataset overhead**: Process startup dominates for < 1,000 items
-   - Recommend system `rm` for very small datasets
-   - fast-rm shines on larger datasets
-
-## Optimization Opportunities
-
-### Already Implemented ✅
-
-1. **Lock-free channels**: Eliminated 16,000+ mutex locks/sec
-2. **Cache line padding**: Prevents false sharing on atomics
-3. **Arc<Path> sharing**: Reduced allocations from 4 clones to 1 Arc
-4. **Non-blocking progress updates**: try_send() never blocks workers
-5. **Two-pool architecture**: Scan and delete fully concurrent
-
-### Future Optimizations 🔮
-
-1. **Adaptive thread pools**: Dynamically adjust based on queue depth
-2. **Batch deletions**: Group small files for bulk unlink syscalls
-3. **Direct syscalls**: Bypass libc for performance-critical paths
-4. **Memory-mapped I/O**: For very large directories (experimental)
-5. **Pre-allocated buffers**: Reduce allocations in hot paths
-
-## Conclusion
-
-### Summary
-
-- **Throughput**: 1,948-4,465 items/sec (depending on dataset and threads)
-- **vs system rm**: 84% speed (acceptable due to added features)
-- **Thread scaling**: 25% improvement with 4 threads
-- **Best use case**: Large datasets (> 10,000 items) with progress tracking needs
+1. **Filesystem type**: ext4, XFS, ZFS, etc. have different performance characteristics
+2. **Storage medium**: SSD vs HDD significantly impacts I/O-bound operations
+3. **Kernel caching**: Warm cache vs cold cache affects results
+4. **System load**: Other processes competing for I/O
+5. **File system fragmentation**: Affects sequential access patterns
 
 ### Recommendations
 
-**Use fast-rm when**:
-- Deleting large directory trees (> 10,000 items)
-- Need real-time progress tracking
-- Want to see deletion speed and errors
-- Safety is important (dry-run, overlap detection)
-- Tuning thread pools for specific workloads
+| Scenario | Recommendation |
+|----------|----------------|
+| Small datasets (< 500 files) | Use system `rm -r` for simplicity |
+| Large datasets (> 1,000 files) | fast-rm provides progress visibility |
+| Need progress tracking | fast-rm with `-v` flag |
+| Maximum speed | System `rm -r` (no TUI overhead) |
+| Safety critical | fast-rm with `-n` (dry-run first) |
 
-**Use system rm when**:
-- Very small datasets (< 100 items)
-- Absolute maximum speed is critical
-- No need for progress feedback
-- Scripting scenarios where simplicity matters
+## Architecture Impact
 
-### Performance Rating
+fast-rm's two-pool architecture affects benchmarks:
 
-| Metric              | Rating | Notes                                    |
-|---------------------|--------|------------------------------------------|
-| **Throughput**      | ⭐⭐⭐⭐   | 1,948-4,465 items/sec is solid          |
-| **Thread Scaling**  | ⭐⭐⭐⭐   | Good scaling up to 4 threads             |
-| **Memory Efficiency**| ⭐⭐⭐⭐⭐ | Lock-free design, minimal allocations    |
-| **I/O Efficiency**  | ⭐⭐⭐    | Limited by filesystem, not code          |
-| **Startup Time**    | ⭐⭐⭐    | ~300ms overhead acceptable               |
-| **Overall**         | ⭐⭐⭐⭐   | **Excellent for intended use cases**     |
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Scanners   │────▶│    Queue    │────▶│  Deleters   │
+│  (Rayon)    │     │  (Lock-free)│     │  (Workers)  │
+└─────────────┘     └─────────────┘     └─────────────┘
+```
 
----
+**Overhead sources:**
+- Process startup: ~50-100ms
+- TUI initialization: ~20-50ms
+- Queue coordination: < 1% of total time
 
-**Generated**: 2025-11-29
-**Tool Version**: fast-rm v0.1.0
-**Architecture**: Two-pool scan/delete with lock-free coordination
+**Where fast-rm excels:**
+- Accurate progress tracking (scan completes before deletion totals known)
+- Error resilience (continue-on-error mode)
+- Configurable parallelism (independent scan/delete thread pools)
+
+## Reproducing Results
+
+For consistent benchmarks:
+
+```bash
+# 1. Close unnecessary applications
+# 2. Disable CPU frequency scaling (if possible)
+sudo cpupower frequency-set -g performance
+
+# 3. Drop filesystem caches
+sync && echo 3 | sudo tee /proc/sys/vm/drop_caches
+
+# 4. Run benchmarks
+cargo bench
+
+# 5. Compare with baseline
+cargo bench -- --save-baseline main
+# ... make changes ...
+cargo bench -- --baseline main
+```
+
+## Contributing
+
+When adding new benchmarks:
+
+1. Use `SamplingMode::Flat` for I/O-bound tests
+2. Keep `sample_size` low (15-20) to reduce runtime
+3. Include both fast-rm and `rm -r` for comparison
+4. Document expected behavior in this file

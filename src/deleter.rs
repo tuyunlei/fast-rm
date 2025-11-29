@@ -9,11 +9,7 @@ use crate::errors::RemoveError;
 use crate::queue::{AdaptiveQueue, FileJob};
 
 /// Worker function that consumes FileJob items from the queue and deletes them
-pub fn delete_worker(
-    queue: &AdaptiveQueue,
-    config: &RemoveConfig,
-    scanners_done: &AtomicBool,
-) {
+pub fn delete_worker(queue: &AdaptiveQueue, config: &RemoveConfig, scanners_done: &AtomicBool) {
     loop {
         match queue.recv_timeout(Duration::from_millis(100)) {
             Ok(job) => {
