@@ -1,1 +1,6 @@
 /target
+/.idea
+/.vscode
+/.claude
+*.log
+**/*.log
