@@ -9,8 +9,11 @@ use crate::config::Verbosity;
 
 pub struct RemoveProgress {
     pub scanned: AtomicUsize,
+    _pad1: [u8; 56], // 64 - 8 bytes = 56 (cache line padding)
     pub deleted: AtomicUsize,
+    _pad2: [u8; 56],
     pub errors: AtomicUsize,
+    _pad3: [u8; 56],
     recent_tx: Sender<Arc<Path>>,
     pub recent_rx: Receiver<Arc<Path>>,
     error_tx: Sender<(Arc<Path>, String)>,
@@ -36,8 +39,11 @@ impl RemoveProgress {
 
         Arc::new(Self {
             scanned: AtomicUsize::new(0),
+            _pad1: [0; 56],
             deleted: AtomicUsize::new(0),
+            _pad2: [0; 56],
             errors: AtomicUsize::new(0),
+            _pad3: [0; 56],
             recent_tx,
             recent_rx,
             error_tx,
