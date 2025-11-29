@@ -41,7 +41,10 @@ fn test_concurrent_scan_delete_no_data_races() {
         }
     }
 
-    assert_eq!(count, expected_count, "Test setup created expected number of items");
+    assert_eq!(
+        count, expected_count,
+        "Test setup created expected number of items"
+    );
 }
 
 #[test]
@@ -325,10 +328,7 @@ fn test_queue_ordering_preserves_parent_child_relationship() {
     let deletion_order = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
 
     // Simulate depth-first traversal (like scanner does)
-    fn traverse(
-        path: &std::path::Path,
-        order: &Arc<Mutex<Vec<PathBuf>>>,
-    ) -> std::io::Result<()> {
+    fn traverse(path: &std::path::Path, order: &Arc<Mutex<Vec<PathBuf>>>) -> std::io::Result<()> {
         let metadata = fs::symlink_metadata(path)?;
 
         if metadata.is_file() {
