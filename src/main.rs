@@ -15,6 +15,7 @@ mod progress;
 mod queue;
 mod removal;
 mod results;
+mod scanner;
 
 use crate::cli::Cli;
 use crate::config::{RemoveConfig, Verbosity};

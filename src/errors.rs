@@ -11,6 +11,7 @@ pub enum RemoveError {
     DirEntryFailed(PathBuf, io::Error),
     UnsupportedType(PathBuf),
     PathOverlap(String),
+    QueueFull,
 }
 
 impl fmt::Display for RemoveError {
@@ -39,6 +40,7 @@ impl fmt::Display for RemoveError {
                 )
             }
             RemoveError::PathOverlap(msg) => write!(f, "{}", msg),
+            RemoveError::QueueFull => write!(f, "Work queue is full, scanner blocked"),
         }
     }
 }
