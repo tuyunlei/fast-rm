@@ -1,6 +1,6 @@
 use crossbeam_channel::{bounded, Receiver, Sender};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -11,10 +11,10 @@ pub struct RemoveProgress {
     pub scanned: AtomicUsize,
     pub deleted: AtomicUsize,
     pub errors: AtomicUsize,
-    recent_tx: Sender<PathBuf>,
-    pub recent_rx: Receiver<PathBuf>,
-    error_tx: Sender<(PathBuf, String)>,
-    pub error_rx: Receiver<(PathBuf, String)>,
+    recent_tx: Sender<Arc<Path>>,
+    pub recent_rx: Receiver<Arc<Path>>,
+    error_tx: Sender<(Arc<Path>, String)>,
+    pub error_rx: Receiver<(Arc<Path>, String)>,
     start_time: Instant,
 }
 
@@ -49,15 +49,17 @@ impl RemoveProgress {
     pub fn inc_scanned(&self) {
         self.scanned.fetch_add(1, Ordering::Relaxed);
     }
-    pub fn inc_deleted(&self, path: PathBuf) {
+    pub fn inc_deleted(&self, path: &Path) {
         self.deleted.fetch_add(1, Ordering::Relaxed);
         // Non-blocking send, drops if channel full (acceptable for display)
-        let _ = self.recent_tx.try_send(path);
+        // Create Arc once instead of cloning PathBuf multiple times
+        let _ = self.recent_tx.try_send(Arc::from(path));
     }
-    pub fn inc_error(&self, path: PathBuf, error: String) {
+    pub fn inc_error(&self, path: &Path, error: String) {
         self.errors.fetch_add(1, Ordering::Relaxed);
         // Non-blocking send, drops if channel full (acceptable for display)
-        let _ = self.error_tx.try_send((path, error));
+        // Create Arc once instead of cloning PathBuf
+        let _ = self.error_tx.try_send((Arc::from(path), error));
     }
 
     pub fn get_stats(&self) -> (usize, usize, usize, f64, f64) {
@@ -78,7 +80,7 @@ impl RemoveProgress {
         (scanned, deleted, errors, speed, eta)
     }
 
-    pub fn get_recent_files(&self) -> Vec<PathBuf> {
+    pub fn get_recent_files(&self) -> Vec<Arc<Path>> {
         let mut files = Vec::new();
         while let Ok(path) = self.recent_rx.try_recv() {
             files.push(path);
@@ -89,7 +91,7 @@ impl RemoveProgress {
         }
         files
     }
-    pub fn get_error_files(&self) -> Vec<(PathBuf, String)> {
+    pub fn get_error_files(&self) -> Vec<(Arc<Path>, String)> {
         let mut errors = Vec::new();
         while let Ok(error) = self.error_rx.try_recv() {
             errors.push(error);

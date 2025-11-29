@@ -20,20 +20,20 @@ pub fn remove_symlink(path: &Path, config: &RemoveConfig) -> Result<u64, RemoveE
         match fs::remove_file(path) {
             Ok(_) => {
                 if let Some(p) = &config.progress {
-                    p.inc_deleted(path.to_path_buf());
+                    p.inc_deleted(path);
                 }
             }
             Err(e) => {
                 let err_msg = e.to_string();
                 if let Some(p) = &config.progress {
-                    p.inc_error(path.to_path_buf(), err_msg);
+                    p.inc_error(path, err_msg);
                 }
                 return Err(RemoveError::RemoveFailed(path.to_path_buf(), e));
             }
         }
     } else {
         if let Some(p) = &config.progress {
-            p.inc_deleted(path.to_path_buf());
+            p.inc_deleted(path);
         }
     }
     Ok(1)
@@ -53,20 +53,20 @@ pub fn remove_file(path: &Path, config: &RemoveConfig) -> Result<u64, RemoveErro
         match fs::remove_file(path) {
             Ok(_) => {
                 if let Some(p) = &config.progress {
-                    p.inc_deleted(path.to_path_buf());
+                    p.inc_deleted(path);
                 }
             }
             Err(e) => {
                 let err_msg = e.to_string();
                 if let Some(p) = &config.progress {
-                    p.inc_error(path.to_path_buf(), err_msg);
+                    p.inc_error(path, err_msg);
                 }
                 return Err(RemoveError::RemoveFailed(path.to_path_buf(), e));
             }
         }
     } else {
         if let Some(p) = &config.progress {
-            p.inc_deleted(path.to_path_buf());
+            p.inc_deleted(path);
         }
     }
     Ok(1)
@@ -92,7 +92,7 @@ pub fn remove_directory(path: &Path, config: &RemoveConfig) -> Result<u64, Remov
             Err(e) => {
                 let error = RemoveError::DirEntryFailed(path.to_path_buf(), e);
                 if let Some(p) = &config.progress {
-                    p.inc_error(path.to_path_buf(), error.to_string());
+                    p.inc_error(path, error.to_string());
                 } else {
                     eprintln!("  {}", error.to_string().red().dimmed());
                 }
@@ -132,20 +132,20 @@ pub fn remove_directory(path: &Path, config: &RemoveConfig) -> Result<u64, Remov
         match fs::remove_dir(path) {
             Ok(_) => {
                 if let Some(p) = &config.progress {
-                    p.inc_deleted(path.to_path_buf());
+                    p.inc_deleted(path);
                 }
             }
             Err(e) => {
                 let err_msg = e.to_string();
                 if let Some(p) = &config.progress {
-                    p.inc_error(path.to_path_buf(), err_msg);
+                    p.inc_error(path, err_msg);
                 }
                 return Err(RemoveError::RemoveDirFailed(path.to_path_buf(), e));
             }
         }
     } else {
         if let Some(p) = &config.progress {
-            p.inc_deleted(path.to_path_buf());
+            p.inc_deleted(path);
         }
     }
 
