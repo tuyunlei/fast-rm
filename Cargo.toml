@@ -12,6 +12,7 @@ rayon = "1.10.0"
 indicatif = "0.17"
 crossterm = "0.27"
 crossbeam-channel = "0.5"
+num_cpus = "1.17.0"
 
 [dev-dependencies]
 tempfile = "3.8"
