@@ -29,4 +29,3 @@ pub struct Cli {
     #[clap(short = 'c', long = "continue-on-error")]
     pub continue_on_error: bool,
 }
-

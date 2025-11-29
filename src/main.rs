@@ -8,10 +8,10 @@ use colored::*;
 use rayon::prelude::*;
 
 mod cli;
-mod errors;
 mod config;
-mod progress;
+mod errors;
 mod path;
+mod progress;
 mod removal;
 mod results;
 
@@ -48,7 +48,9 @@ fn main() {
     if config.dry_run {
         println!(
             "{}",
-            "Dry run mode activated. No files will be deleted.".yellow().bold()
+            "Dry run mode activated. No files will be deleted."
+                .yellow()
+                .bold()
         );
         println!();
     }
@@ -73,7 +75,11 @@ fn main() {
             if config.progress.is_none() && (config.verbosity.is_verbose() || config.dry_run) {
                 println!(
                     "{} {:?}...",
-                    if config.dry_run { "Would process".blue() } else { "Processing".cyan() },
+                    if config.dry_run {
+                        "Would process".blue()
+                    } else {
+                        "Processing".cyan()
+                    },
                     path
                 );
             }

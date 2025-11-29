@@ -18,7 +18,12 @@ pub fn deduplicate_and_check_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Re
                 }
             }
             Err(e) => {
-                eprintln!("{} Failed to canonicalize {:?}: {}. Using original path.", "Warning:".yellow(), path, e);
+                eprintln!(
+                    "{} Failed to canonicalize {:?}: {}. Using original path.",
+                    "Warning:".yellow(),
+                    path,
+                    e
+                );
                 if !seen.contains(path) {
                     seen.insert(path.clone());
                     canonical_paths.push(path.clone());
@@ -52,8 +57,8 @@ pub fn deduplicate_and_check_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs::File;
+    use tempfile::TempDir;
 
     #[test]
     fn test_path_deduplication() {
@@ -79,4 +84,3 @@ mod tests {
         assert!(matches!(err, RemoveError::PathOverlap(_)));
     }
 }
-

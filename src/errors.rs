@@ -32,7 +32,11 @@ impl fmt::Display for RemoveError {
                 write!(f, "Error accessing directory entry in {:?}: {}", path, err)
             }
             RemoveError::UnsupportedType(path) => {
-                write!(f, "Path {:?} is not a file, directory, or symlink that can be removed", path)
+                write!(
+                    f,
+                    "Path {:?} is not a file, directory, or symlink that can be removed",
+                    path
+                )
             }
             RemoveError::PathOverlap(msg) => write!(f, "{}", msg),
         }
@@ -52,4 +56,3 @@ mod tests {
         assert!(display.contains("not a file, directory, or symlink"));
     }
 }
-

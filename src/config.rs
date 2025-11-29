@@ -30,7 +30,7 @@ pub struct RemoveConfig {
     pub verbosity: Verbosity,
     pub dry_run: bool,
     pub continue_on_error: bool,
-    pub progress: Option<Arc<RemoveProgress>>, 
+    pub progress: Option<Arc<RemoveProgress>>,
 }
 
 impl RemoveConfig {
@@ -52,9 +52,12 @@ impl RemoveConfig {
 
     pub fn log_check(&self, path: &Path) {
         if self.verbosity.is_verbose() {
-            let msg = if self.dry_run { "Would check " } else { "Checking " };
+            let msg = if self.dry_run {
+                "Would check "
+            } else {
+                "Checking "
+            };
             println!("  {}{:?}", msg.dimmed(), path);
         }
     }
 }
-
