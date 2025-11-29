@@ -1,29 +1,47 @@
+use crossbeam_channel::{bounded, Receiver, Sender};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::config::Verbosity;
 
-#[derive(Debug)]
 pub struct RemoveProgress {
     pub scanned: AtomicUsize,
     pub deleted: AtomicUsize,
     pub errors: AtomicUsize,
-    recent_files: Mutex<std::collections::VecDeque<PathBuf>>,
-    error_files: Mutex<std::collections::VecDeque<(PathBuf, String)>>,
+    recent_tx: Sender<PathBuf>,
+    pub recent_rx: Receiver<PathBuf>,
+    error_tx: Sender<(PathBuf, String)>,
+    pub error_rx: Receiver<(PathBuf, String)>,
     start_time: Instant,
+}
+
+impl std::fmt::Debug for RemoveProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoveProgress")
+            .field("scanned", &self.scanned)
+            .field("deleted", &self.deleted)
+            .field("errors", &self.errors)
+            .field("start_time", &self.start_time)
+            .finish()
+    }
 }
 
 impl RemoveProgress {
     pub fn new() -> Arc<Self> {
+        let (recent_tx, recent_rx) = bounded(1000);
+        let (error_tx, error_rx) = bounded(100);
+
         Arc::new(Self {
             scanned: AtomicUsize::new(0),
             deleted: AtomicUsize::new(0),
             errors: AtomicUsize::new(0),
-            recent_files: Mutex::new(std::collections::VecDeque::new()),
-            error_files: Mutex::new(std::collections::VecDeque::new()),
+            recent_tx,
+            recent_rx,
+            error_tx,
+            error_rx,
             start_time: Instant::now(),
         })
     }
@@ -33,19 +51,13 @@ impl RemoveProgress {
     }
     pub fn inc_deleted(&self, path: PathBuf) {
         self.deleted.fetch_add(1, Ordering::Relaxed);
-        let mut recent = self.recent_files.lock().unwrap();
-        recent.push_back(path);
-        while recent.len() > 50 {
-            recent.pop_front();
-        }
+        // Non-blocking send, drops if channel full (acceptable for display)
+        let _ = self.recent_tx.try_send(path);
     }
     pub fn inc_error(&self, path: PathBuf, error: String) {
         self.errors.fetch_add(1, Ordering::Relaxed);
-        let mut errors = self.error_files.lock().unwrap();
-        errors.push_back((path, error));
-        while errors.len() > 50 {
-            errors.pop_front();
-        }
+        // Non-blocking send, drops if channel full (acceptable for display)
+        let _ = self.error_tx.try_send((path, error));
     }
 
     pub fn get_stats(&self) -> (usize, usize, usize, f64, f64) {
@@ -67,10 +79,26 @@ impl RemoveProgress {
     }
 
     pub fn get_recent_files(&self) -> Vec<PathBuf> {
-        self.recent_files.lock().unwrap().iter().cloned().collect()
+        let mut files = Vec::new();
+        while let Ok(path) = self.recent_rx.try_recv() {
+            files.push(path);
+            // Keep only last 50 items
+            if files.len() > 50 {
+                files.remove(0);
+            }
+        }
+        files
     }
     pub fn get_error_files(&self) -> Vec<(PathBuf, String)> {
-        self.error_files.lock().unwrap().iter().cloned().collect()
+        let mut errors = Vec::new();
+        while let Ok(error) = self.error_rx.try_recv() {
+            errors.push(error);
+            // Keep only last 50 items
+            if errors.len() > 50 {
+                errors.remove(0);
+            }
+        }
+        errors
     }
 }
 
