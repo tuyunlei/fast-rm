@@ -66,10 +66,10 @@ fn main() {
 
     let tui_thread = thread::spawn(move || {
         while !is_done_clone.load(Ordering::Relaxed) {
-            display_clone.update(&progress_clone, dry_run);
+            display_clone.update(&progress_clone, dry_run, None);
             thread::sleep(Duration::from_millis(50));
         }
-        display_clone.update(&progress_clone, dry_run);
+        display_clone.update(&progress_clone, dry_run, None);
     });
 
     let results: Vec<_> = paths_to_process
@@ -93,7 +93,7 @@ fn main() {
 
     is_done.store(true, Ordering::Relaxed);
     tui_thread.join().expect("TUI thread panicked");
-    display.finish(&progress, cli.dry_run);
+    display.finish(&progress, cli.dry_run, None);
 
     let (total_items, total_errors) = process_results(results, &config);
     print_summary_and_exit(total_items, total_errors, &config);

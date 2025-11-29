@@ -180,18 +180,34 @@ impl ProgressDisplay {
         }
     }
 
-    pub fn update(&self, progress: &RemoveProgress, dry_run: bool) {
+    pub fn update(&self, progress: &RemoveProgress, dry_run: bool, queue_depth: Option<usize>) {
         let (scanned, deleted, errors, speed, _eta) = progress.get_stats();
-        let main_msg = if dry_run {
-            format!(
-                "{} scanned | {} errors | {:.1} items/s",
-                scanned, errors, speed
-            )
+        let main_msg = if let Some(depth) = queue_depth {
+            // Two-pool mode: show scanned, queue depth, deleted
+            if dry_run {
+                format!(
+                    "{} scanned | {} in queue | {} errors | {:.1} items/s",
+                    scanned, depth, errors, speed
+                )
+            } else {
+                format!(
+                    "{} scanned | {} in queue | {} deleted | {} errors | {:.1} items/s",
+                    scanned, depth, deleted, errors, speed
+                )
+            }
         } else {
-            format!(
-                "{} deleted | {} errors | {:.1} items/s",
-                deleted, errors, speed
-            )
+            // Legacy mode: show only deleted/scanned
+            if dry_run {
+                format!(
+                    "{} scanned | {} errors | {:.1} items/s",
+                    scanned, errors, speed
+                )
+            } else {
+                format!(
+                    "{} deleted | {} errors | {:.1} items/s",
+                    deleted, errors, speed
+                )
+            }
         };
         self.main_bar.set_message(main_msg);
 
@@ -240,15 +256,31 @@ impl ProgressDisplay {
         }
     }
 
-    pub fn finish(&self, progress: &RemoveProgress, dry_run: bool) {
+    pub fn finish(&self, progress: &RemoveProgress, dry_run: bool, queue_depth: Option<usize>) {
         let (scanned, deleted, errors, _, _) = progress.get_stats();
-        let final_msg = if dry_run {
-            format!(
-                "✓ Dry run complete: {} items scanned, {} errors",
-                scanned, errors
-            )
+        let final_msg = if let Some(depth) = queue_depth {
+            // Two-pool mode: show all stats
+            if dry_run {
+                format!(
+                    "✓ Dry run complete: {} scanned, {} in queue, {} errors",
+                    scanned, depth, errors
+                )
+            } else {
+                format!(
+                    "✓ Complete: {} scanned, {} deleted, {} errors",
+                    scanned, deleted, errors
+                )
+            }
         } else {
-            format!("✓ Complete: {} items deleted, {} errors", deleted, errors)
+            // Legacy mode
+            if dry_run {
+                format!(
+                    "✓ Dry run complete: {} items scanned, {} errors",
+                    scanned, errors
+                )
+            } else {
+                format!("✓ Complete: {} items deleted, {} errors", deleted, errors)
+            }
         };
         self.main_bar.finish_with_message(final_msg);
         for bar in &self.file_bars {
