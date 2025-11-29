@@ -86,16 +86,31 @@ fast-rm -v -n -c <paths>
 
 ## Performance
 
-| Metric | Value |
-|--------|-------|
-| Throughput | 1,948 - 4,465 items/sec |
-| Thread Scaling | 25% improvement with 4 threads |
-| Memory Overhead | Minimal (lock-free design) |
+### fast-rm vs rm -r
 
-Best suited for:
-- Large directory trees (> 10,000 items)
-- When progress visibility is needed
-- Safety-critical operations
+| Files | fast-rm | rm -r | Ratio |
+|-------|---------|-------|-------|
+| 100 | 170ms | 19ms | 0.11x |
+| 500 | 192ms | 55ms | 0.29x |
+| 1,000 | 220ms | 97ms | 0.44x |
+| 2,000 | 351ms | 160ms | 0.46x |
+| 5,000 | 632ms | 250ms | 0.40x |
+
+### Key Observations
+
+- **Startup overhead**: ~170ms (TUI initialization, thread pool creation)
+- **Throughput scaling**: 587 → 7,917 items/sec as file count increases
+- **Trade-off**: Slower than `rm -r`, but provides real-time progress and safety features
+
+### When to Use fast-rm
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Small directories (< 500 files) | Use `rm -r` |
+| Large directories (> 5,000 files) | fast-rm provides progress visibility |
+| Need to monitor progress | fast-rm with `-v` |
+| Safety critical (production data) | fast-rm with `-n` (dry-run first) |
+| Maximum speed | Use `rm -r` |
 
 See [BENCHMARK.md](./BENCHMARK.md) for detailed performance analysis.
 
