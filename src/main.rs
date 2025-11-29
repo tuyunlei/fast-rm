@@ -12,6 +12,7 @@ mod config;
 mod errors;
 mod path;
 mod progress;
+mod queue;
 mod removal;
 mod results;
 
