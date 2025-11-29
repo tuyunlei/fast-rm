@@ -9,6 +9,7 @@ use rayon::prelude::*;
 
 mod cli;
 mod config;
+mod deleter;
 mod errors;
 mod path;
 mod progress;
